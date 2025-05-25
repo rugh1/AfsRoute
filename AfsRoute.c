@@ -1,10 +1,22 @@
 #include <fltKernel.h>
-
-
-
 //
 // The FLT_REGISTRATION structure provides information about a file system minifilter to the filter manager.
 //
+
+enum MsgType {
+    PID,
+    OPEN,
+    WRITE,
+    CREATE,
+    DEL
+};
+
+struct AfsRoutePortMessage {
+    enum MsgType state;
+    USHORT DataLength;
+    WCHAR Data[1];
+}typedef AfsRoutePortMessage;
+
 
 PFLT_FILTER g_minifilterHandle = NULL;
 CONST FLT_REGISTRATION g_filterRegistration; 
@@ -20,6 +32,26 @@ FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
 );
 
 
+
+int send(enum MsgType type, UNICODE_STRING* filepath) {
+    if (g_ClientPort) { // client connected
+        USHORT nameLen = filepath->Length;
+        USHORT len = sizeof(AfsRoutePortMessage) + nameLen;
+        AfsRoutePortMessage *msg = (AfsRoutePortMessage*)ExAllocatePool2(
+            POOL_FLAG_PAGED, len, 0x31676174); // I really dont know what are tags this one is tag1 reversed cuz idk why
+        if (msg) {
+            msg->state = type;
+            msg->DataLength = nameLen / sizeof(WCHAR);
+            RtlCopyMemory(msg->Data, filepath->Buffer, nameLen);
+            LARGE_INTEGER timeout;
+            timeout.QuadPart = -10000 * 100; // 100 msec
+            FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
+                NULL, NULL, &timeout);
+            ExFreePool(msg);
+        }
+    }
+}
+
 NTSTATUS PortConnectNotify(
     PFLT_PORT ClientPort, PVOID ServerPortCookie,
     PVOID ConnectionContext, ULONG SizeOfContext,
@@ -29,6 +61,7 @@ NTSTATUS PortConnectNotify(
     UNREFERENCED_PARAMETER(SizeOfContext);
     UNREFERENCED_PARAMETER(ConnectionPortCookie);
     g_ClientPort = ClientPort;
+    DbgPrint("AfsRoute1:recived connection");
     return STATUS_SUCCESS;
 }
 
@@ -37,6 +70,8 @@ void PortDisconnectNotify(PVOID ConnectionCookie) {
     UNREFERENCED_PARAMETER(ConnectionCookie);
     FltCloseClientPort(g_minifilterHandle, &g_ClientPort);
     g_ClientPort = NULL;
+    DbgPrint("AfsRoute1:disconnected connection");
+
 }
 
 
