@@ -1,0 +1,144 @@
+
+;;;
+;;; Simulate Reparse File System Filter Driver Sample
+;;;
+;;;
+;;; Copyright (c) 1999 - 2001, Microsoft Corporation
+;;;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "ActivityMonitor"                         ;This is determined by the work this filter driver does
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ProviderString%
+DriverVer   = 01/01/2004,1.0.0.1
+CatalogFile = afsroute.cat
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %Disk1%
+
+[SourceDisksFiles]
+afsroute.sys = 1
+
+[DestinationDirs]
+AfsRouteDownlevel.CopyDriverFiles = 12                  ;%windir%\system32\drivers
+AfsRouteDownlevel.DelDriverFiles  = 12                  ;%windir%\system32\drivers
+AfsRoute.DriverFiles              = 13                  ;driver store
+
+;;
+;; Default install sections
+;;
+
+[DefaultInstall.NT$ARCH$.10.0...25952]
+OptionDesc          = %AfsRouteServiceDesc%
+CopyFiles           = AfsRoute.DriverFiles
+
+[DefaultInstall.NT$ARCH$.10.0...25952.Services]
+AddService          = %AfsRouteServiceName%,,AfsRoute.Service
+
+;
+; Support sections
+;
+
+[AfsRoute.Service]
+DisplayName      = %AfsRouteServiceName%
+Description      = %AfsRouteServiceDesc%
+ServiceBinary    = %13%\AfsRoute.sys              ;driver store
+Dependencies     = %FltmgrServiceName%          ;FltMgr
+ServiceType      = 2                            ;SERVICE_FILE_SYSTEM_DRIVER
+StartType        = 3                            ;SERVICE_DEMAND_START
+ErrorControl     = 1                            ;SERVICE_ERROR_NORMAL
+LoadOrderGroup   = "FSFilter Activity Monitor"
+AddReg           = AfsRoute.AddRegistry, Common.AddRegistry
+
+[AfsRoute.AddRegistry]
+HKR,"Parameters","SupportedFeatures",0x00010001,0x3
+HKR,"Parameters\Instances",%RegDefaultInstanceValueName%,0x00000000,%DefaultInstance%
+HKR,"Parameters\Instances\"%Instance1.Name%,%RegAltitudeValueName%,0x00000000,%Instance1.Altitude%
+HKR,"Parameters\Instances\"%Instance1.Name%,%RegFlagsValueName%,0x00010001,%Instance1.Flags%
+
+[AfsRoute.DriverFiles]
+afsroute.sys
+
+;;
+;; Registry values shared for all OS versions
+;;
+
+[Common.AddRegistry]
+HKR,"Parameters","DebugLevel",0x00010001,0x1F
+HKR,"Parameters","RemapRenamesAndLinks",0x00010001,0x00
+HKR,"Parameters","NewMapping",0x00000000,%NewMapping%
+HKR,"Parameters","OldMapping",0x00000000,%OldMapping%
+
+;;
+;; Downlevel default install sections
+;;
+
+[DefaultInstall.NT$ARCH$]
+OptionDesc          = %AfsRouteServiceDesc%
+CopyFiles           = AfsRouteDownlevel.CopyDriverFiles
+
+[DefaultInstall.NT$ARCH$.Services]
+AddService          = %AfsRouteServiceName%,,AfsRouteDownlevel.Service
+
+;;
+;; Downlevel default uninstall sections
+;;
+
+[DefaultUninstall.NT$ARCH$]
+LegacyUninstall = 1
+DelFiles        = AfsRouteDownlevel.DelDriverFiles
+
+
+[DefaultUninstall.NT$ARCH$.Services]
+DelService      = %AfsRouteServiceName%,0x204
+
+;
+; Downlevel support sections
+;
+
+[AfsRouteDownlevel.Service]
+DisplayName      = %AfsRouteServiceName%
+Description      = %AfsRouteServiceDesc%
+ServiceBinary    = %12%\afsroute.sys              ;%windir%\system32\drivers\afsroute.sys
+Dependencies     = %FltmgrServiceName%          ;FltMgr
+ServiceType      = 2                            ;SERVICE_FILE_SYSTEM_DRIVER
+StartType        = 3                            ;SERVICE_DEMAND_START
+ErrorControl     = 1                            ;SERVICE_ERROR_NORMAL
+LoadOrderGroup   = "FSFilter Activity Monitor"
+AddReg           = AfsRouteDownlevel.AddRegistry, Common.AddRegistry
+
+[AfsRouteDownlevel.AddRegistry]
+HKR,,"SupportedFeatures",0x00010001,0x3
+HKR,"Instances",%RegDefaultInstanceValueName%,0x00000000,%DefaultInstance%
+HKR,"Instances\"%Instance1.Name%,%RegAltitudeValueName%,0x00000000,%Instance1.Altitude%
+HKR,"Instances\"%Instance1.Name%,%RegFlagsValueName%,0x00010001,%Instance1.Flags%
+
+[AfsRouteDownlevel.CopyDriverFiles]
+afsroute.sys
+
+[afsrouteDownlevel.DelDriverFiles]
+afsroute.sys
+
+;;
+;; String Section
+;;
+
+[Strings]
+ProviderString                      = "TODO-Set-Provider"
+AfsRouteServiceDesc                   = "Simulate Reparse File System Filter Driver Sample"
+AfsRouteServiceName                   = "AfsRoute"
+FltmgrServiceName                   = "FltMgr"
+RegDefaultInstanceValueName         = "DefaultInstance"
+RegAltitudeValueName                = "Altitude"
+RegFlagsValueName                   = "Flags"
+Disk1                               = "AfsRoute Source Media"
+NewMapping                          = "\a\b"
+OldMapping                          = "\x\y"
+
+;Instances specific information.
+DefaultInstance      = "AfsRoute"
+Instance1.Name       = "AfsRoute"
+Instance1.Altitude   = "371100"
+Instance1.Flags      = 0x0
