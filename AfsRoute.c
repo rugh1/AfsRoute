@@ -11,12 +11,19 @@ enum MsgType {
     DEL
 };
 
+int PID_TO_IGNORE; 
+
 struct AfsRoutePortMessage {
     enum MsgType state;
     USHORT DataLength;
     WCHAR Data[1];
 }typedef AfsRoutePortMessage;
 
+
+struct AfsRouteReplyMsg {
+     FILTER_REPLY_HEADER ReplyHeader;
+     INT data; // can be a process id or 0 if approved -1 if needs to be loaded , -2 if not approved
+}typedef AfsRouteReplyMsg;
 
 PFLT_FILTER g_minifilterHandle = NULL;
 CONST FLT_REGISTRATION g_filterRegistration; 
@@ -32,6 +39,36 @@ FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
 );
 
 
+int sendNoData(enum MsgType type) {
+    if (g_ClientPort) { // client connected
+        USHORT nameLen = 0;
+        USHORT len = sizeof(AfsRoutePortMessage) + nameLen;
+        AfsRoutePortMessage* msg = (AfsRoutePortMessage*)ExAllocatePool2(
+            POOL_FLAG_PAGED, len, 0x31676174); // I really dont know what are tags this one is tag1 reversed cuz idk why
+        if (msg) {
+            msg->state = type;
+            msg->DataLength = 0;
+            msg->Data[0] = L'0';
+            ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
+            LARGE_INTEGER timeout;
+            timeout.QuadPart = -10000 * 1000; // 1 sec
+            AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
+                POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
+            NTSTATUS status = FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
+                reply, &lenbuffer, &timeout);
+            DbgPrint("AfsRoute1: Raw reply buffer: %02x %02x %02x %02x ...", ((char*)reply)[0], ((char*)reply)[1], ((char*)reply)[2], ((char*)reply)[3]);
+            DbgPrint("AfsRoute1: FltSendMessage returned 0x%x\n", status);
+            INT data = *(INT*)reply;
+            DbgPrint("AfsRoute1: recived data: %d, ", data);
+            ExFreePool(msg);
+            ExFreePool(reply);
+            return data;
+        }
+        return -1;
+    }
+    return -1;
+}
+
 
 int send(enum MsgType type, UNICODE_STRING* filepath) {
     if (g_ClientPort) { // client connected
@@ -45,11 +82,21 @@ int send(enum MsgType type, UNICODE_STRING* filepath) {
             RtlCopyMemory(msg->Data, filepath->Buffer, nameLen);
             LARGE_INTEGER timeout;
             timeout.QuadPart = -10000 * 100; // 100 msec
-            FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
-                NULL, NULL, &timeout);
+            ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
+            AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
+                POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
+            NTSTATUS status = FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
+                reply, &lenbuffer, &timeout);
+            DbgPrint("AfsRoute1: FltSendMessage returned 0x%x\n", status);
+            INT data = *(INT*)reply;
+            DbgPrint("AfsRoute1: recived data: %d", data);
             ExFreePool(msg);
+            ExFreePool(reply);
+            return data;
         }
+        return 1;
     }
+    return 1;
 }
 
 NTSTATUS PortConnectNotify(
@@ -71,7 +118,6 @@ void PortDisconnectNotify(PVOID ConnectionCookie) {
     FltCloseClientPort(g_minifilterHandle, &g_ClientPort);
     g_ClientPort = NULL;
     DbgPrint("AfsRoute1:disconnected connection");
-
 }
 
 
@@ -121,9 +167,18 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject, IN PUNICODE_STRING Registry
     FltFreeSecurityDescriptor(sd);
     if (!NT_SUCCESS(status))
         return STATUS_FAILED_DRIVER_ENTRY;
-    DbgPrint("AfsRoute1: suce");
-
-
+    
+    while (g_ClientPort == NULL) {
+        continue;
+    }
+    DbgPrint("AfsRoute1: continue drive entry");
+    int pid = sendNoData(PID);
+    if (pid == -1) {
+        DbgPrint("AfsRoute1: failed drive entry");
+        return STATUS_FAILED_DRIVER_ENTRY;
+    }
+    DbgPrint("AfsRoute1: pid to ignore: %d", pid);
+    PID_TO_IGNORE = pid;
     status = FltStartFiltering(g_minifilterHandle);
     if (!NT_SUCCESS(status))
     {
@@ -442,7 +497,7 @@ Return Value:
 
     ULONG pid = FltGetRequestorProcessId(Cbd);
     DbgPrint("AfsRoute4: pid called is :%lu ", pid);
-    if (pid == 9660) {
+    if (pid == PID_TO_IGNORE) {
         goto SimRepPreCreateCleanup;
     }
 
@@ -691,7 +746,14 @@ NTSTATUS GetRedirectedPath(_In_ PFLT_FILE_NAME_INFORMATION fileNameInfo,_Inout_ 
         PWCHAR ReRoutePath = L"\\Device\\HarddiskVolume4\\AfsCache";
         index += 4;// 4 to remove AFS/
         status = GetNewPath(fileNameInfo->Name, newName, ReRoutePath,64 ,index);
-        //DbgPrint("AfsRoute2: new path is : %S", newname->Buffer);
+        DbgPrint("AfsRoute1: sending...");
+        UNICODE_STRING insidePath;
+        PWCHAR pathAfterAfs = fileNameInfo->Name.Buffer + index;
+        insidePath.Buffer = pathAfterAfs;
+        insidePath.Length = fileNameInfo->Name.Length - index * 2;
+        insidePath.MaximumLength = insidePath.Length;
+        send(OPEN, &insidePath);
+        DbgPrint("AfsRoute2: new path is : %S", newName->Buffer);
         return STATUS_SUCCESS;
     }
     else if (status == 2) {
