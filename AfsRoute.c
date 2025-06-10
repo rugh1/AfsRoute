@@ -38,6 +38,12 @@ FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
     _Outptr_ PVOID* CompletionContext
 );
 
+FLT_PREOP_CALLBACK_STATUS AfsPreWrite(
+    _Inout_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _Outptr_ PVOID* CompletionContext
+);
+
 
 int sendNoData(enum MsgType type) {
     if (g_ClientPort) { // client connected
@@ -51,7 +57,7 @@ int sendNoData(enum MsgType type) {
             msg->Data[0] = L'0';
             ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
             LARGE_INTEGER timeout;
-            timeout.QuadPart = -10000 * 1000; // 1 sec
+            timeout.QuadPart = -10000 * 10000; // 10 sec
             AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
                 POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
             NTSTATUS status = FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
@@ -81,7 +87,7 @@ int send(enum MsgType type, UNICODE_STRING* filepath) {
             msg->DataLength = nameLen / sizeof(WCHAR);
             RtlCopyMemory(msg->Data, filepath->Buffer, nameLen);
             LARGE_INTEGER timeout;
-            timeout.QuadPart = -10000 * 100; // 100 msec
+            timeout.QuadPart = -10000 * 10000; // 10 sec
             ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
             AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
                 POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
@@ -141,6 +147,14 @@ CONST FLT_OPERATION_REGISTRATION g_callbacks[] =
         SimRepPreCreate,
         0
     },
+    { IRP_MJ_WRITE,
+        0,
+        AfsPreWrite,
+        0
+    },
+
+    
+         
 
     { IRP_MJ_OPERATION_END }
 };
@@ -264,17 +278,17 @@ CONST FLT_REGISTRATION g_filterRegistration =
 
 NTSTATUS GetRedirectedPath(_In_ PFLT_FILE_NAME_INFORMATION fileNameInfo, _Inout_ UNICODE_STRING* newName);
 
-FLT_PREOP_CALLBACK_STATUS FLTAPI PreOperationCreate(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+FLT_PREOP_CALLBACK_STATUS FLTAPI AfsPreWrite(
+    _Inout_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _Outptr_ PVOID* CompletionContext
 )
 {
     // 
     // Pre-create callback to get file info during creation or opening
     //
 
-    DbgPrint("%wZ\n", &Data->Iopb->TargetFileObject->FileName);
+    DbgPrint("AfsWrite: %wZ\n", &Cbd->Iopb->TargetFileObject->FileName);
 
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
