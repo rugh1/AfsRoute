@@ -6,7 +6,8 @@
 enum MsgType {
     PID,
     OPEN,
-    WRITE,
+    WRITE1,
+    WRITE2,
     CREATE,
     DEL
 };
@@ -44,6 +45,7 @@ FLT_PREOP_CALLBACK_STATUS AfsPreWrite(
     _Outptr_ PVOID* CompletionContext
 );
 
+int CheckIfAfs(UNICODE_STRING name, int* index);
 
 int sendNoData(enum MsgType type) {
     if (g_ClientPort) { // client connected
@@ -57,7 +59,7 @@ int sendNoData(enum MsgType type) {
             msg->Data[0] = L'0';
             ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
             LARGE_INTEGER timeout;
-            timeout.QuadPart = -10000 * 10000; // 10 sec
+            timeout.QuadPart = -10000 * 1000; // 1 sec
             AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
                 POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
             NTSTATUS status = FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
@@ -87,7 +89,7 @@ int send(enum MsgType type, UNICODE_STRING* filepath) {
             msg->DataLength = nameLen / sizeof(WCHAR);
             RtlCopyMemory(msg->Data, filepath->Buffer, nameLen);
             LARGE_INTEGER timeout;
-            timeout.QuadPart = -10000 * 10000; // 10 sec
+            timeout.QuadPart = -10000 * 1000; // 1 sec
             ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
             AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
                 POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
@@ -288,8 +290,26 @@ FLT_PREOP_CALLBACK_STATUS FLTAPI AfsPreWrite(
     // Pre-create callback to get file info during creation or opening
     //
 
-    DbgPrint("AfsWrite: %wZ\n", &Cbd->Iopb->TargetFileObject->FileName);
+    
+  
+    ULONG pid = FltGetRequestorProcessId(Cbd);
+    DbgPrint("AfsWrite2: pid called is :%lu ", pid);
+    if (pid == PID_TO_IGNORE || pid == 4) { // pid 4 is the pid of system which acctuly does the writing on the "lowest level"
+        DbgPrint("AfsWrite: found in pid %wZ\n", &Cbd->Iopb->TargetFileObject->FileName);
+        goto AfsPreWriteCleanup;
+    }
 
+    int index;
+    int status = CheckIfAfs(Cbd->Iopb->TargetFileObject->FileName, &index);
+    if (status == 2) {
+        DbgPrint("AfsWrite: %wZ  pid : %lu  \n", &Cbd->Iopb->TargetFileObject->FileName, pid);
+        Cbd->IoStatus.Status = STATUS_ACCESS_DENIED;
+        Cbd->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
+    }
+
+
+    AfsPreWriteCleanup:
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
 
@@ -736,8 +756,8 @@ int CheckIfAfs(UNICODE_STRING name, int *index) {
             goto checkifafscleanup;
         }
     }
-    for (int i = 0; i < pathStr.Length - 7; i++) {
-        if (stringcmp("\\ToAfs\\", pathStr.Buffer + i, 7) == 1) {
+    for (int i = 0; i < pathStr.Length - 10; i++) {
+        if (stringcmp("\\AfsCache\\", pathStr.Buffer + i, 10) == 1) {
             *index = i;
             status = 2;
             goto checkifafscleanup;
@@ -770,12 +790,12 @@ NTSTATUS GetRedirectedPath(_In_ PFLT_FILE_NAME_INFORMATION fileNameInfo,_Inout_ 
         DbgPrint("AfsRoute2: new path is : %S", newName->Buffer);
         return STATUS_SUCCESS;
     }
-    else if (status == 2) {
-        DbgPrint("AfsRoute2: found file to reroute to afs: %S status: %i", fileNameInfo->Name.Buffer, index);
-        PWCHAR ReRoutePath = L"\\Device\\HarddiskVolume4\\Users\\vboxuser\\Desktop\\AFS";
-        index += 6;// 6 to remove ToAfs/
-        status = GetNewPath(fileNameInfo->Name, newName, ReRoutePath, 100, index);
-        return STATUS_SUCCESS;
-    }
+    //else if (status == 2) {
+    //    DbgPrint("AfsRoute2: found file to reroute to afs: %S status: %i", fileNameInfo->Name.Buffer, index);
+    //    PWCHAR ReRoutePath = L"\\Device\\HarddiskVolume4\\Users\\vboxuser\\Desktop\\AFS";
+    //    index += 6;// 6 to remove ToAfs/
+    //    status = GetNewPath(fileNameInfo->Name, newName, ReRoutePath, 100, index);
+    //    return STATUS_SUCCESS;
+    //}
     return STATUS_NOT_FOUND;
 }
