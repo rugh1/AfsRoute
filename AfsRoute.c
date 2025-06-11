@@ -102,9 +102,20 @@ int send(enum MsgType type, UNICODE_STRING* filepath) {
                 POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
             NTSTATUS status = FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
                 reply, &lenbuffer, &timeout);
+            INT data;
+            if (status == STATUS_TIMEOUT) {
+                data = -1;
+                goto sendcleanup;
+            }
+            else if (!NT_SUCCESS(status)) {
+                data = -1;
+                goto sendcleanup;
+            }
             DbgPrint("AfsRoute1: FltSendMessage returned 0x%x\n", status);
-            INT data = *(INT*)reply;
+            data = *(INT*)reply;
             DbgPrint("AfsRoute1: recived data: %d", data);
+
+            sendcleanup:
             ExFreePool(msg);
             ExFreePool(reply);
             return data;
@@ -293,6 +304,9 @@ INT check_access(UNICODE_STRING filepath) {
     insidePath.MaximumLength = insidePath.Length;
     insidePath.Buffer = filepath.Buffer + 9;
     INT data = send(WRITE1, &insidePath);
+    if (data == -1) {
+        data = 255;
+    }
     return data != 255; // -1 is bad else is not
 }
 
