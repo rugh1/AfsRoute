@@ -33,6 +33,13 @@ PFLT_PORT g_ServerPort;
 PFLT_PORT g_ClientPort;
 
 
+FLT_POSTOP_CALLBACK_STATUS FLTAPI AfsPostWrite(
+    _In_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ PVOID* CompletionContext,
+    _In_ FLT_POST_OPERATION_FLAGS Flags
+);
+
 FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
     _Inout_  PFLT_CALLBACK_DATA Cbd,
     _In_     PCFLT_RELATED_OBJECTS FltObjects,
@@ -102,9 +109,9 @@ int send(enum MsgType type, UNICODE_STRING* filepath) {
             ExFreePool(reply);
             return data;
         }
-        return 1;
+        return -1;
     }
-    return 1;
+    return -1;
 }
 
 NTSTATUS PortConnectNotify(
@@ -152,7 +159,7 @@ CONST FLT_OPERATION_REGISTRATION g_callbacks[] =
     { IRP_MJ_WRITE,
         0,
         AfsPreWrite,
-        0
+        AfsPostWrite
     },
 
     
@@ -280,6 +287,15 @@ CONST FLT_REGISTRATION g_filterRegistration =
 
 NTSTATUS GetRedirectedPath(_In_ PFLT_FILE_NAME_INFORMATION fileNameInfo, _Inout_ UNICODE_STRING* newName);
 
+INT check_access(UNICODE_STRING filepath) {
+    UNICODE_STRING insidePath;
+    insidePath.Length = filepath.Length - 9 * 2;
+    insidePath.MaximumLength = insidePath.Length;
+    insidePath.Buffer = filepath.Buffer + 9;
+    INT data = send(WRITE1, &insidePath);
+    return data != 255; // -1 is bad else is not
+}
+
 FLT_PREOP_CALLBACK_STATUS FLTAPI AfsPreWrite(
     _Inout_  PFLT_CALLBACK_DATA Cbd,
     _In_     PCFLT_RELATED_OBJECTS FltObjects,
@@ -289,9 +305,6 @@ FLT_PREOP_CALLBACK_STATUS FLTAPI AfsPreWrite(
     // 
     // Pre-create callback to get file info during creation or opening
     //
-
-    
-  
     ULONG pid = FltGetRequestorProcessId(Cbd);
     DbgPrint("AfsWrite2: pid called is :%lu ", pid);
     if (pid == PID_TO_IGNORE || pid == 4) { // pid 4 is the pid of system which acctuly does the writing on the "lowest level"
@@ -303,15 +316,48 @@ FLT_PREOP_CALLBACK_STATUS FLTAPI AfsPreWrite(
     int status = CheckIfAfs(Cbd->Iopb->TargetFileObject->FileName, &index);
     if (status == 2) {
         DbgPrint("AfsWrite: %wZ  pid : %lu  \n", &Cbd->Iopb->TargetFileObject->FileName, pid);
-        Cbd->IoStatus.Status = STATUS_ACCESS_DENIED;
-        Cbd->IoStatus.Information = 0;
-        return FLT_PREOP_COMPLETE;
+        //check if has write access
+        INT access = check_access(Cbd->Iopb->TargetFileObject->FileName);
+        DbgPrint("AfsWrite: access reciced %d", access);
+;        if (!access) {
+            Cbd->IoStatus.Status = STATUS_ACCESS_DENIED;
+            Cbd->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
+        return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+        
     }
 
 
     AfsPreWriteCleanup:
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
+
+
+FLT_POSTOP_CALLBACK_STATUS FLTAPI AfsPostWrite(
+    _In_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ PVOID* CompletionContext, 
+    _In_ FLT_POST_OPERATION_FLAGS Flags
+)
+{
+    // 
+    // Pre-create callback to get file info during creation or opening
+    // AfsCache/
+    
+    PWCH name = (Cbd->Iopb->TargetFileObject->FileName.Buffer + 9);
+    UNICODE_STRING insidePath;
+    insidePath.Length = Cbd->Iopb->TargetFileObject->FileName.Length - 9 * 2;
+    insidePath.MaximumLength = insidePath.Length;
+    insidePath.Buffer = name;
+    DbgPrint("AfsWrite: post callback %S length: %hu \n",insidePath.Buffer ,insidePath.Length);
+    send(WRITE2, &insidePath);
+    return FLT_POSTOP_FINISHED_PROCESSING;
+}
+
+
+
+
 
 FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
     _Inout_  PFLT_CALLBACK_DATA Cbd,
