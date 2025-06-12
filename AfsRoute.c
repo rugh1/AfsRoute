@@ -6,7 +6,8 @@
 enum MsgType {
     PID,
     OPEN,
-    WRITE,
+    WRITE1,
+    WRITE2,
     CREATE,
     DEL
 };
@@ -32,12 +33,26 @@ PFLT_PORT g_ServerPort;
 PFLT_PORT g_ClientPort;
 
 
+FLT_POSTOP_CALLBACK_STATUS FLTAPI AfsPostWrite(
+    _In_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ PVOID* CompletionContext,
+    _In_ FLT_POST_OPERATION_FLAGS Flags
+);
+
 FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
     _Inout_  PFLT_CALLBACK_DATA Cbd,
     _In_     PCFLT_RELATED_OBJECTS FltObjects,
     _Outptr_ PVOID* CompletionContext
 );
 
+FLT_PREOP_CALLBACK_STATUS AfsPreWrite(
+    _Inout_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _Outptr_ PVOID* CompletionContext
+);
+
+int CheckIfAfs(UNICODE_STRING name, int* index);
 
 int sendNoData(enum MsgType type) {
     if (g_ClientPort) { // client connected
@@ -81,22 +96,33 @@ int send(enum MsgType type, UNICODE_STRING* filepath) {
             msg->DataLength = nameLen / sizeof(WCHAR);
             RtlCopyMemory(msg->Data, filepath->Buffer, nameLen);
             LARGE_INTEGER timeout;
-            timeout.QuadPart = -10000 * 100; // 100 msec
+            timeout.QuadPart = -10000 * 1000; // 1 sec
             ULONG lenbuffer = sizeof(AfsRouteReplyMsg);
             AfsRouteReplyMsg* reply = (AfsRouteReplyMsg*)ExAllocatePool2(
                 POOL_FLAG_PAGED, sizeof(AfsRouteReplyMsg), 0x31676174);
             NTSTATUS status = FltSendMessage(g_minifilterHandle, &g_ClientPort, msg, len,
                 reply, &lenbuffer, &timeout);
+            INT data;
+            if (status == STATUS_TIMEOUT) {
+                data = -1;
+                goto sendcleanup;
+            }
+            else if (!NT_SUCCESS(status)) {
+                data = -1;
+                goto sendcleanup;
+            }
             DbgPrint("AfsRoute1: FltSendMessage returned 0x%x\n", status);
-            INT data = *(INT*)reply;
+            data = *(INT*)reply;
             DbgPrint("AfsRoute1: recived data: %d", data);
+
+            sendcleanup:
             ExFreePool(msg);
             ExFreePool(reply);
             return data;
         }
-        return 1;
+        return -1;
     }
-    return 1;
+    return -1;
 }
 
 NTSTATUS PortConnectNotify(
@@ -141,6 +167,14 @@ CONST FLT_OPERATION_REGISTRATION g_callbacks[] =
         SimRepPreCreate,
         0
     },
+    { IRP_MJ_WRITE,
+        0,
+        AfsPreWrite,
+        AfsPostWrite
+    },
+
+    
+         
 
     { IRP_MJ_OPERATION_END }
 };
@@ -264,20 +298,80 @@ CONST FLT_REGISTRATION g_filterRegistration =
 
 NTSTATUS GetRedirectedPath(_In_ PFLT_FILE_NAME_INFORMATION fileNameInfo, _Inout_ UNICODE_STRING* newName);
 
-FLT_PREOP_CALLBACK_STATUS FLTAPI PreOperationCreate(
-    _Inout_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+INT check_access(UNICODE_STRING filepath) {
+    UNICODE_STRING insidePath;
+    insidePath.Length = filepath.Length - 9 * 2;
+    insidePath.MaximumLength = insidePath.Length;
+    insidePath.Buffer = filepath.Buffer + 9;
+    INT data = send(WRITE1, &insidePath);
+    if (data == -1) {
+        data = 255;
+    }
+    return data != 255; // -1 is bad else is not
+}
+
+FLT_PREOP_CALLBACK_STATUS FLTAPI AfsPreWrite(
+    _Inout_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _Outptr_ PVOID* CompletionContext
 )
 {
     // 
     // Pre-create callback to get file info during creation or opening
     //
+    ULONG pid = FltGetRequestorProcessId(Cbd);
+    DbgPrint("AfsWrite2: pid called is :%lu ", pid);
+    if (pid == PID_TO_IGNORE || pid == 4) { // pid 4 is the pid of system which acctuly does the writing on the "lowest level"
+        DbgPrint("AfsWrite: found in pid %wZ\n", &Cbd->Iopb->TargetFileObject->FileName);
+        goto AfsPreWriteCleanup;
+    }
 
-    DbgPrint("%wZ\n", &Data->Iopb->TargetFileObject->FileName);
+    int index;
+    int status = CheckIfAfs(Cbd->Iopb->TargetFileObject->FileName, &index);
+    if (status == 2) {
+        DbgPrint("AfsWrite: %wZ  pid : %lu  \n", &Cbd->Iopb->TargetFileObject->FileName, pid);
+        //check if has write access
+        INT access = check_access(Cbd->Iopb->TargetFileObject->FileName);
+        DbgPrint("AfsWrite: access reciced %d", access);
+;        if (!access) {
+            Cbd->IoStatus.Status = STATUS_ACCESS_DENIED;
+            Cbd->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
+        return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+        
+    }
 
+
+    AfsPreWriteCleanup:
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
+
+
+FLT_POSTOP_CALLBACK_STATUS FLTAPI AfsPostWrite(
+    _In_  PFLT_CALLBACK_DATA Cbd,
+    _In_     PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ PVOID* CompletionContext, 
+    _In_ FLT_POST_OPERATION_FLAGS Flags
+)
+{
+    // 
+    // Pre-create callback to get file info during creation or opening
+    // AfsCache/
+    
+    PWCH name = (Cbd->Iopb->TargetFileObject->FileName.Buffer + 9);
+    UNICODE_STRING insidePath;
+    insidePath.Length = Cbd->Iopb->TargetFileObject->FileName.Length - 9 * 2;
+    insidePath.MaximumLength = insidePath.Length;
+    insidePath.Buffer = name;
+    DbgPrint("AfsWrite: post callback %S length: %hu \n",insidePath.Buffer ,insidePath.Length);
+    send(WRITE2, &insidePath);
+    return FLT_POSTOP_FINISHED_PROCESSING;
+}
+
+
+
+
 
 FLT_PREOP_CALLBACK_STATUS SimRepPreCreate(
     _Inout_  PFLT_CALLBACK_DATA Cbd,
@@ -722,8 +816,8 @@ int CheckIfAfs(UNICODE_STRING name, int *index) {
             goto checkifafscleanup;
         }
     }
-    for (int i = 0; i < pathStr.Length - 7; i++) {
-        if (stringcmp("\\ToAfs\\", pathStr.Buffer + i, 7) == 1) {
+    for (int i = 0; i < pathStr.Length - 10; i++) {
+        if (stringcmp("\\AfsCache\\", pathStr.Buffer + i, 10) == 1) {
             *index = i;
             status = 2;
             goto checkifafscleanup;
@@ -756,12 +850,12 @@ NTSTATUS GetRedirectedPath(_In_ PFLT_FILE_NAME_INFORMATION fileNameInfo,_Inout_ 
         DbgPrint("AfsRoute2: new path is : %S", newName->Buffer);
         return STATUS_SUCCESS;
     }
-    else if (status == 2) {
-        DbgPrint("AfsRoute2: found file to reroute to afs: %S status: %i", fileNameInfo->Name.Buffer, index);
-        PWCHAR ReRoutePath = L"\\Device\\HarddiskVolume4\\Users\\vboxuser\\Desktop\\AFS";
-        index += 6;// 6 to remove ToAfs/
-        status = GetNewPath(fileNameInfo->Name, newName, ReRoutePath, 100, index);
-        return STATUS_SUCCESS;
-    }
+    //else if (status == 2) {
+    //    DbgPrint("AfsRoute2: found file to reroute to afs: %S status: %i", fileNameInfo->Name.Buffer, index);
+    //    PWCHAR ReRoutePath = L"\\Device\\HarddiskVolume4\\Users\\vboxuser\\Desktop\\AFS";
+    //    index += 6;// 6 to remove ToAfs/
+    //    status = GetNewPath(fileNameInfo->Name, newName, ReRoutePath, 100, index);
+    //    return STATUS_SUCCESS;
+    //}
     return STATUS_NOT_FOUND;
 }
